@@ -346,12 +346,12 @@ private fun NewPlaylistForm(
  */
 @Composable
 internal fun RenamePlaylistForm(
-    playlist: UserPlaylist,
+    initialName: String,
     onBack: () -> Unit,
     onRename: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var name by remember { mutableStateOf(playlist.title) }
+    var name by remember { mutableStateOf(initialName) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
 
@@ -418,7 +418,7 @@ internal fun RenamePlaylistForm(
         }
         Button(
             onClick = submit,
-            enabled = name.isNotBlank() && name != playlist.title,
+            enabled = name.isNotBlank() && name != initialName,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 22.dp),

@@ -167,9 +167,14 @@ fun BrowseActionsSheet(
     var confirmingDeleteDownload by remember { mutableStateOf(false) }
 
     val playlist = target.playlist
-    if (renaming && playlist != null && onRename != null) {
+    // Renaming is offered wherever the caller passes [onRename], and the name
+    // to start from is the live playlist's own when there is one — a card's
+    // rename has to wait for the page to say who owns it — falling back to the
+    // title the sheet was opened with. That fallback is what lets a server
+    // playlist, which has no [UserPlaylist] at all, rename from the same form.
+    if (renaming && onRename != null) {
         RenamePlaylistForm(
-            playlist = playlist,
+            initialName = playlist?.title ?: target.title,
             onBack = { renaming = false },
             onRename = onRename,
             modifier = modifier,
