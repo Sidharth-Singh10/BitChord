@@ -58,14 +58,21 @@ enum class AudioQuality(
      * caps, and it is the only source that can answer at all when the ones
      * above it are skipped.
      */
-    fun permits(kind: SourceKind): Boolean = when (this) {
-        LOSSLESS -> true
+    fun permits(kind: SourceKind): Boolean = when {
+        // A Subsonic server is the listener's own library and can answer at
+        // every rung: a bit-exact file when asked, a transcode when the
+        // connection calls for one. Which of the two it serves is the server's
+        // own standing preference (SubsonicStreamQuality), and skipping it
+        // here would take that decision away — leaving the user's own files
+        // unreachable on mobile data for no saving at all.
+        kind == SourceKind.SUBSONIC -> true
+        this == LOSSLESS -> true
         // No lossless answer is wanted here, and a source that can serve one is
         // the slow half of the list: an addon fronting several catalogues walks
         // all of them before it answers, which is seconds spent to land on a
         // transcode JioSaavn already has at 320.
-        HIGH -> !kind.canServeLossless
-        MEDIUM, LOW -> kind == SourceKind.YOUTUBE
+        this == HIGH -> !kind.canServeLossless
+        else -> kind == SourceKind.YOUTUBE
     }
 }
 

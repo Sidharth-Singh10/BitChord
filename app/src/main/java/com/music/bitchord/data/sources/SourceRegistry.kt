@@ -7,6 +7,7 @@ import android.util.Log
 import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.sources.addon.AddonClient
+import com.music.bitchord.data.subsonic.SubsonicClient
 import com.music.bitchord.data.sources.addon.AddonException
 import com.music.bitchord.data.sources.addon.DetectedFormat
 import com.music.bitchord.data.sources.addon.SourceFormats
@@ -19,6 +20,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -36,6 +38,21 @@ data class SourceConfig(
     val label: String = "",
     val baseUrl: String = "",
     val enabled: Boolean = true,
+    /**
+     * Subsonic only: the account to sign in as.
+     *
+     * Held in the same encrypted prefs file as everything else here, which is
+     * what makes a password storable at all — Subsonic's token scheme is
+     * derived from the password on every request, so unlike a token there is
+     * no form of it that can be kept instead.
+     */
+    val username: String = "",
+    /** Subsonic only: the password, encrypted at rest like [baseUrl] and every other secret here. */
+    val password: String = "",
+    /** Subsonic only: how the server is asked to authenticate. */
+    val authMode: SubsonicAuthMode = SubsonicAuthMode.AUTO,
+    /** Subsonic only: what this server is asked to serve, standing across connections. */
+    val streamQuality: SubsonicStreamQuality = SubsonicStreamQuality.ORIGINAL,
 ) {
     /** What the sources screen and the player show. Never blank. */
     val displayName: String
@@ -47,7 +64,14 @@ data class SourceConfig(
 
     /** Whether this has enough filled in to be worth contacting at all. */
     val isComplete: Boolean
-        get() = !kind.needsServer || baseUrl.isNotBlank()
+        get() = when {
+            !kind.needsServer -> true
+            // A server without an account is a row that will fail its probe
+            // and could not have been made to work from here; saying so on the
+            // row beats asking it a question it cannot answer.
+            kind == SourceKind.SUBSONIC -> baseUrl.isNotBlank() && username.isNotBlank() && password.isNotBlank()
+            else -> baseUrl.isNotBlank()
+        }
 }
 
 /**
@@ -203,8 +227,11 @@ object SourceRegistry {
      * Normalising here rather than in the editor keeps it true for every caller
      * and not just the one with a text field.
      */
-    private fun SourceConfig.tidied(): SourceConfig =
-        if (kind == SourceKind.ADDON) copy(baseUrl = AddonClient.normalizeBase(baseUrl)) else this
+    private fun SourceConfig.tidied(): SourceConfig = when (kind) {
+        SourceKind.ADDON -> copy(baseUrl = AddonClient.normalizeBase(baseUrl))
+        SourceKind.SUBSONIC -> copy(baseUrl = SubsonicClient.normalizeBase(baseUrl))
+        else -> this
+    }
 
     fun remove(configId: String) {
         val target = config(configId) ?: return
@@ -374,6 +401,7 @@ object SourceRegistry {
         // Same protocol, same implementation — the kinds differ only in rank.
         SourceKind.CUSTOM_MODULE -> ModuleSource(config)
         SourceKind.MODULE -> ModuleSource(config)
+        SourceKind.SUBSONIC -> SubsonicSource(config)
         SourceKind.JIOSAAVN -> JioSaavnSource(config)
         SourceKind.YOUTUBE -> YouTubeSource(config)
     }
@@ -424,9 +452,39 @@ object SourceRegistry {
             .build()
             .toString()
 
+    // ── Server browsing identity ────────────────────────────────────────
+
+    /**
+     * A page on a configured server, as it travels through the detail stack.
+     *
+     * The same trick [trackKey] plays for tracks, for the same reason: a
+     * `browseId` is the app's one page identity everywhere — the detail stack,
+     * the navigation target, the long-press menu — and a server page has to be
+     * one of those without a second field being threaded through every one of
+     * them. The `srcb:` prefix is what tells it apart from an Innertube browse
+     * id, and the kind is in the id rather than inferred from context because
+     * the loader needs to know what it is about to fetch before it fetches it.
+     */
+    fun browseKey(configId: String, kind: ServerBrowseKind, id: String = ""): String =
+        "$BROWSE_PREFIX$configId$SEPARATOR${kind.name.lowercase(Locale.ROOT)}$SEPARATOR$id"
+
+    /** The server page a [browseKey] names, or null if this is not one. */
+    fun parseBrowseKey(key: String): ServerBrowseRef? {
+        if (!key.startsWith(BROWSE_PREFIX)) return null
+        val parts = key.removePrefix(BROWSE_PREFIX).split(SEPARATOR)
+        if (parts.size < 2 || parts[0].isEmpty()) return null
+        val kind = ServerBrowseKind.entries
+            .firstOrNull { it.name.equals(parts[1], ignoreCase = true) }
+            ?: return null
+        // A row id may itself contain the separator, so everything past the
+        // kind is joined back together rather than taken as one segment.
+        return ServerBrowseRef(parts[0], kind, parts.drop(2).joinToString(SEPARATOR))
+    }
+
     private val BUILT_IN_KINDS = listOf(SourceKind.JIOSAAVN, SourceKind.YOUTUBE)
 
     private const val KEY_SOURCES = "sources"
     private const val PREFIX = "src:"
+    private const val BROWSE_PREFIX = "srcb:"
     private const val SEPARATOR = "::"
 }

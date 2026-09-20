@@ -127,6 +127,27 @@ enum class SourceKind(
         rank = 1,
     ),
 
+    /**
+     * A Subsonic-compatible server the user pointed at themselves.
+     *
+     * Navidrome, Airsonic, Gonic, Ampache and Jellyfin's endpoint all speak
+     * this protocol, and so does anything else implementing Subsonic 1.16.1.
+     * Unlike [ADDON] and [MODULE], which front somebody else's catalogue, this
+     * source is the listener's own library: it can hand over a bit-exact FLAC
+     * and it can transcode on demand, which is why it is asked on every
+     * quality rung rather than only on the lossless one — see
+     * [SubsonicStreamQuality], which carries the server's standing answer.
+     */
+    SUBSONIC(
+        label = "Subsonic server",
+        detail = "Navidrome, Airsonic, Gonic, Ampache, or Jellyfin's Subsonic endpoint. " +
+            "Streams your own library at whatever the files hold.",
+        labels = listOf("FLAC", "Lossless", "Your library"),
+        needsServer = true,
+        canServeLossless = true,
+        rank = 1,
+    ),
+
     JIOSAAVN(
         label = "JioSaavn",
         detail = "JioSaavn high-quality streams up to 320kbps AAC/MP4. A lossy fallback, tried before YouTube.",

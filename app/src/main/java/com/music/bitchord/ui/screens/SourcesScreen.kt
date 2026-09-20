@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -40,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -56,7 +59,9 @@ import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceHealth
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
+import com.music.bitchord.data.subsonic.SubsonicClient
 import com.music.bitchord.ui.components.AddonEditorAlert
+import com.music.bitchord.ui.components.SubsonicEditorAlert
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -89,6 +94,12 @@ fun SourcesScreen(
      * and the mini player.
      */
     onEditSource: (SourceConfig) -> Unit,
+    /**
+     * Opens a server's library. Offered only on rows that hold one — see
+     * [SourceRow.onBrowse] — and raised for the same reason the editor is:
+     * the destination is a detail page the activity owns.
+     */
+    onBrowseServer: (SourceConfig) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val configs by SourceRegistry.configs.collectAsStateWithLifecycle()
@@ -205,6 +216,18 @@ fun SourcesScreen(
                         // delete. JioSaavn and YouTube have no address to
                         // change, so a tap on them would open an empty editor.
                         onClick = if (config.kind.needsServer) ({ onEditSource(config) }) else null,
+                        // A server is a library, not just a catalogue to
+                        // search, so its row carries a way into it. Only when
+                        // the config is complete: a browse button on a row
+                        // that cannot connect would open a page that can only
+                        // fail.
+                        onBrowse = if (
+                            config.kind == SourceKind.SUBSONIC && config.enabled && config.isComplete
+                        ) {
+                            ({ onBrowseServer(config) })
+                        } else {
+                            null
+                        },
                         // YouTube gets no switch at all — see
                         // [SourceRegistry.setEnabled] for why one would be a lie.
                         onToggle = if (config.kind == SourceKind.YOUTUBE) {
@@ -232,7 +255,15 @@ fun SourcesScreen(
 
             RowDivider()
             AddSourceRow(
+                title = stringResource(R.string.add_addon),
+                detail = stringResource(R.string.add_addon_detail),
                 onClick = { onEditSource(SourceConfig(kind = SourceKind.ADDON)) },
+            )
+            RowDivider()
+            AddSourceRow(
+                title = stringResource(R.string.add_server),
+                detail = stringResource(R.string.add_server_detail),
+                onClick = { onEditSource(SourceConfig(kind = SourceKind.SUBSONIC)) },
             )
         }
 
@@ -441,9 +472,18 @@ private const val SWAP_THRESHOLD = 0.6f
  * in a section of its own: what it adds goes to the *top* of that list, and a
  * row sitting under the numbered ones is the clearest way to say "and you can
  * put another one in here".
+ *
+ * Two of these exist — an addon and a Subsonic server — because they are two
+ * different questions ("what catalogue do you have a link to" and "where is
+ * your library"), and folding them behind one "Add" that guesses from the URL
+ * is how someone ends up pasting a server address into a manifest box.
  */
 @Composable
-private fun AddSourceRow(onClick: () -> Unit) {
+private fun AddSourceRow(
+    title: String,
+    detail: String,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -464,12 +504,12 @@ private fun AddSourceRow(onClick: () -> Unit) {
         Spacer(Modifier.width(ICON_GAP))
         Column(Modifier.weight(1f)) {
             Text(
-                text = stringResource(R.string.add_addon),
+                text = title,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
             Text(
-                text = stringResource(R.string.add_addon_detail),
+                text = detail,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
@@ -484,6 +524,13 @@ private fun SourceRow(
     config: SourceConfig,
     health: SourceHealth?,
     onClick: (() -> Unit)?,
+    /**
+     * A way into a source that is a whole library rather than a catalogue —
+     * null for everything that is not. Drawn as its own tap target beside the
+     * switch because the row's own tap is the editor, and a row that edited
+     * when you meant to browse would be the wrong kind of surprising.
+     */
+    onBrowse: (() -> Unit)? = null,
     /** Null for a source that cannot be switched off, which gets a label instead. */
     onToggle: ((Boolean) -> Unit)?,
     /** On, but skipped by the ceiling the current connection is set to. */
@@ -525,6 +572,7 @@ private fun SourceRow(
                 SourceKind.ADDON -> Icons.Rounded.Extension
                 SourceKind.CUSTOM_MODULE -> Icons.Rounded.Extension
                 SourceKind.MODULE -> Icons.Rounded.Extension
+                SourceKind.SUBSONIC -> Icons.Rounded.Dns
                 SourceKind.JIOSAAVN -> Icons.Rounded.GraphicEq // or some other icon
                 SourceKind.YOUTUBE -> Icons.Rounded.PlayCircle
             },
@@ -575,6 +623,18 @@ private fun SourceRow(
             )
         }
         Spacer(Modifier.width(8.dp))
+        if (onBrowse != null) {
+            Text(
+                text = stringResource(R.string.server_browse),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable(onClick = onBrowse)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+        }
         if (onToggle == null) {
             Text(
                 text = stringResource(R.string.always_on),
@@ -644,6 +704,14 @@ internal fun SourceEditorAlert(
     onDelete: () -> Unit,
     scope: kotlinx.coroutines.CoroutineScope,
 ) {
+    // A server is a different editor — an address and an account, plus a
+    // standing answer about what to ask it to serve. Same host, same
+    // callbacks, so the activity does not need to know which one it opened.
+    if (config.kind == SourceKind.SUBSONIC) {
+        SubsonicSourceEditor(hazeState, config, onDismiss, onSaved, onDelete, scope)
+        return
+    }
+
     val isNew = SourceRegistry.config(config.id) == null
     var baseUrl by remember { mutableStateOf(config.baseUrl) }
     var busy by remember { mutableStateOf(false) }
@@ -741,6 +809,110 @@ internal fun SourceEditorAlert(
         statusIsGood = statusIsGood,
         testing = busy,
         canSubmit = baseUrl.isNotBlank(),
+        onTest = { run(thenSave = false) },
+        onSave = { run(thenSave = true) },
+        onRemove = if (isNew) null else onDelete,
+        onDismiss = onDismiss,
+    )
+}
+
+/**
+ * Add or edit a Subsonic server.
+ *
+ * Test and Save ask the same question the addon editor asks — is there a
+ * server here, and will it talk to this account — and the health probe is what
+ * answers it. The duplicate check is on the address *and* the account, not the
+ * addon editor's URL alone: two people's libraries on one server are two
+ * sources, and refusing the second because the host matches would be wrong.
+ */
+@Composable
+private fun SubsonicSourceEditor(
+    hazeState: HazeState,
+    config: SourceConfig,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+    onDelete: () -> Unit,
+    scope: kotlinx.coroutines.CoroutineScope,
+) {
+    val isNew = SourceRegistry.config(config.id) == null
+    var baseUrl by remember { mutableStateOf(config.baseUrl) }
+    var username by remember { mutableStateOf(config.username) }
+    var password by remember { mutableStateOf(config.password) }
+    var quality by remember { mutableStateOf(config.streamQuality) }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var statusIsGood by remember { mutableStateOf(false) }
+
+    val connected = stringResource(R.string.connected)
+    val alreadyAdded = stringResource(R.string.source_already_added)
+
+    fun candidate(): SourceConfig = config.copy(
+        kind = SourceKind.SUBSONIC,
+        baseUrl = SubsonicClient.normalizeBase(baseUrl),
+        username = username.trim(),
+        password = password,
+        streamQuality = quality,
+    )
+
+    fun run(thenSave: Boolean) {
+        busy = true
+        status = null
+        scope.launch {
+            val candidate = candidate()
+            SourceRegistry.configs.value.firstOrNull { other ->
+                other.id != config.id &&
+                    other.kind == SourceKind.SUBSONIC &&
+                    SubsonicClient.normalizeBase(other.baseUrl) == candidate.baseUrl &&
+                    other.username == candidate.username
+            }?.let { existing ->
+                statusIsGood = false
+                status = String.format(alreadyAdded, existing.displayName)
+                busy = false
+                return@launch
+            }
+
+            // Identified, and now asked whether it actually works — a server
+            // can be perfectly well formed and still refuse this account.
+            val health = withContext(Dispatchers.IO) {
+                runCatching { SourceRegistry.probeCandidate(candidate) }
+                    .getOrElse { SourceHealth.Unreachable(it.message ?: "Failed") }
+            }
+            statusIsGood = health.isOk
+            status = when (health) {
+                is SourceHealth.Ok -> listOfNotNull(connected, health.detail).joinToString(" · ")
+                is SourceHealth.Rejected -> health.reason
+                is SourceHealth.Unreachable -> health.reason
+            }
+            busy = false
+
+            // Stored even when the probe came back unhappy: a server that is
+            // asleep is still worth keeping, and refusing to save it until it
+            // answers would make setting one up from a coffee shop impossible.
+            if (thenSave) {
+                if (isNew) SourceRegistry.add(candidate) else SourceRegistry.update(candidate)
+                onSaved()
+            }
+        }
+    }
+
+    SubsonicEditorAlert(
+        hazeState = hazeState,
+        title = if (isNew) stringResource(R.string.add_server) else config.displayName,
+        description = stringResource(R.string.server_editor_description),
+        urlValue = baseUrl,
+        // A result describes the server it was run against, so the moment any
+        // of it is edited the result stops being true and is cleared.
+        onUrlChange = { baseUrl = it; status = null },
+        usernameValue = username,
+        onUsernameChange = { username = it; status = null },
+        passwordValue = password,
+        onPasswordChange = { password = it; status = null },
+        quality = quality,
+        onQualityChange = { quality = it; status = null },
+        status = status,
+        statusIsGood = statusIsGood,
+        testing = busy,
+        canSubmit = baseUrl.isNotBlank() && username.isNotBlank() && password.isNotBlank(),
         onTest = { run(thenSave = false) },
         onSave = { run(thenSave = true) },
         onRemove = if (isNew) null else onDelete,

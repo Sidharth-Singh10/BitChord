@@ -76,6 +76,7 @@ import com.music.bitchord.data.model.LikeStatus
 import com.music.bitchord.data.model.ROW_ART_PX
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.artworkAt
+import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.download.DownloadState
 import com.music.bitchord.download.Downloads
 import com.music.bitchord.playback.SleepTimer
@@ -217,7 +218,11 @@ fun SongActionsSheet(
             )
         }
 
-        if (signedIn && !isOffline) {
+        // A source-backed track has no YouTube identity to rate — its id names
+        // a song YouTube has never heard of — so the sheet does not offer the
+        // rating actions for one. The player surfaces hide the same heart for
+        // the same reason; see NowPlayingScreen.
+        if (signedIn && !isOffline && SourceRegistry.parseTrackKey(song.videoId) == null) {
             ActionRow(
                 icon = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                 label = if (liked) stringResource(R.string.remove_from_liked) else stringResource(R.string.like),

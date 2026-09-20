@@ -1450,16 +1450,24 @@ class PlaybackService : MediaLibraryService() {
                     .setDisplayName(getString(R.string.revert_to_original))
                     .build()
             }
-        val favorite = CommandButton.Builder(
-            if (LikeState.overrides.value[player?.currentMediaItem?.mediaId] == LikeStatus.LIKE) {
-                CommandButton.ICON_HEART_FILLED
-            } else {
-                CommandButton.ICON_HEART_UNFILLED
-            },
-        )
-            .setSessionCommand(favoriteCommand)
-            .setDisplayName("Favorite")
-            .build()
+        // A track from a configured source has no YouTube identity to rate, so
+        // the notification simply does not offer the heart for one — the same
+        // rule the player's own surfaces apply. See [toggleFavoriteFromNotification]
+        // for the other half of the promise.
+        val favorite = current
+            ?.takeIf { SourceRegistry.parseTrackKey(it.videoId) == null }
+            ?.let {
+                CommandButton.Builder(
+                    if (LikeState.overrides.value[player?.currentMediaItem?.mediaId] == LikeStatus.LIKE) {
+                        CommandButton.ICON_HEART_FILLED
+                    } else {
+                        CommandButton.ICON_HEART_UNFILLED
+                    },
+                )
+                    .setSessionCommand(favoriteCommand)
+                    .setDisplayName("Favorite")
+                    .build()
+            }
         val shuffleEnabled = QueueShuffle.enabled.value
         val shuffle = CommandButton.Builder(
             if (shuffleEnabled) {
@@ -1740,6 +1748,12 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun toggleFavoriteFromNotification(videoId: String) {
+        // The notification's heart is not offered for a source-backed track —
+        // see [notificationButtons] — and this is the guard behind that: an
+        // id shaped `src:{config}::{id}` names a song YouTube has never heard
+        // of, and rating it would fail at best.
+        if (SourceRegistry.parseTrackKey(videoId) != null) return
+
         favoriteActionJob?.cancel()
         val previous = LikeState.overrides.value[videoId] ?: LikeStatus.INDIFFERENT
         val target = if (previous == LikeStatus.LIKE) {

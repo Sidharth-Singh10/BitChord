@@ -228,6 +228,7 @@ import com.music.bitchord.data.NerdStats
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.listentogether.PartyMember
 import com.music.bitchord.data.settings.TrackAnalysisState
+import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.canvas.CanvasArtwork
 import com.music.bitchord.data.canvas.CanvasRepository
 import com.music.bitchord.data.lyrics.CharGrowth
@@ -2933,9 +2934,10 @@ fun NowPlayingScreen(
                     // liking is about *this song*, and the row below is about
                     // how the queue plays. Guests get nothing to tap, since
                     // there's no account to record it against — and neither
-                    // does a local file or a finished download, which carries
-                    // no YouTube identity to rate.
-                    if (signedIn && song.localUri == null) {
+                    // does a local file, a finished download, or a track from
+                    // a configured source: none of them carries a YouTube
+                    // identity to rate.
+                    if (signedIn && song.localUri == null && SourceRegistry.parseTrackKey(song.videoId) == null) {
                         val liked = likeStatus == LikeStatus.LIKE
                         CircleGlyph(
                             icon = if (liked) BitChordIcons.HeartFilled else BitChordIcons.Heart,
@@ -4203,9 +4205,9 @@ private fun WideCredits(
         }
         Spacer(Modifier.width(10.dp))
         // Same gate as the phone player's: no account to like against for a
-        // guest, and no YouTube identity to rate a local file or a finished
-        // download against either.
-        if (signedIn && song.localUri == null) {
+        // guest, and no YouTube identity to rate a local file, a finished
+        // download, or a track from a configured source against either.
+        if (signedIn && song.localUri == null && SourceRegistry.parseTrackKey(song.videoId) == null) {
             val liked = likeStatus == LikeStatus.LIKE
             CircleGlyph(
                 icon = if (liked) BitChordIcons.HeartFilled else BitChordIcons.Heart,

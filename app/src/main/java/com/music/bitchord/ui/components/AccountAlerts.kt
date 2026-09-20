@@ -28,7 +28,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -42,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.data.sources.SubsonicStreamQuality
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
@@ -379,6 +382,199 @@ fun AddonEditorAlert(
         // Above Save rather than beside it: an address is worth checking before
         // it is stored, and a row of three cramped buttons is what the Material
         // dialog did badly.
+        AlertAction(
+            label = if (testing) stringResource(R.string.testing) else stringResource(R.string.test),
+            emphasised = false,
+            onClick = onTest,
+            enabled = canSubmit && !testing,
+        )
+        AlertRule()
+        AlertAction(
+            label = stringResource(R.string.save),
+            emphasised = true,
+            onClick = onSave,
+            enabled = canSubmit && !testing,
+        )
+        if (onRemove != null) {
+            AlertRule()
+            AlertAction(
+                label = stringResource(R.string.remove_source),
+                emphasised = false,
+                destructive = true,
+                onClick = onRemove,
+                enabled = !testing,
+            )
+        }
+        AlertRule()
+        AlertAction(
+            label = stringResource(R.string.cancel),
+            emphasised = false,
+            onClick = onDismiss,
+            enabled = !testing,
+        )
+    }
+}
+
+/**
+ * Add or edit a Subsonic server: address, account, and what to ask it to serve.
+ *
+ * Three fields rather than the addon editor's one, because a Subsonic server
+ * authenticates every request and the account is part of the address in
+ * practice. The password goes into the same encrypted preferences file the
+ * addon URLs live in, which is the only place a secret belongs on this screen.
+ *
+ * The quality row is the one with a real trade, and it opens a list rather
+ * than cycling in place — nine values is a list, not a tap. The note under it
+ * appears only for [SubsonicStreamQuality.ORIGINAL] because that is the one
+ * choice that spends data the per-network ceiling was meant to save, and a
+ * choice that quietly outranks a setting the user made elsewhere has to say so
+ * where they made it.
+ */
+@OptIn(ExperimentalHazeMaterialsApi::class)
+@Composable
+fun SubsonicEditorAlert(
+    hazeState: HazeState,
+    title: String,
+    description: String,
+    urlValue: String,
+    onUrlChange: (String) -> Unit,
+    usernameValue: String,
+    onUsernameChange: (String) -> Unit,
+    passwordValue: String,
+    onPasswordChange: (String) -> Unit,
+    quality: SubsonicStreamQuality,
+    onQualityChange: (SubsonicStreamQuality) -> Unit,
+    /** What the last test said, or null before one has been run. */
+    status: String?,
+    statusIsGood: Boolean,
+    testing: Boolean,
+    /** Whether there is enough typed in to be worth testing or saving. */
+    canSubmit: Boolean,
+    onTest: () -> Unit,
+    onSave: () -> Unit,
+    /** Offered only for a server already stored — there is nothing to remove otherwise. */
+    onRemove: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    var choosingQuality by remember { mutableStateOf(false) }
+
+    // Resolved here rather than inside ChoiceAlert's `detail` lambda, which is
+    // not a composable context and cannot call stringResource itself.
+    val originalDetail = stringResource(R.string.server_quality_original_detail)
+    val networkDetail = stringResource(R.string.server_quality_network_detail)
+
+    // The quality list replaces the editor rather than stacking on top of it:
+    // two frosted cards over one another is one card too many, and the choice
+    // has to come back to the editor it belongs to.
+    if (choosingQuality) {
+        ChoiceAlert(
+            hazeState = hazeState,
+            title = stringResource(R.string.server_stream_quality),
+            message = stringResource(R.string.server_stream_quality_description),
+            options = SubsonicStreamQuality.entries,
+            selected = quality,
+            label = { it.label },
+            detail = { option ->
+                when (option) {
+                    SubsonicStreamQuality.ORIGINAL -> originalDetail
+                    SubsonicStreamQuality.MATCH_NETWORK -> networkDetail
+                    else -> null
+                }
+            },
+            onSelect = { onQualityChange(it); choosingQuality = false },
+            onDismiss = { choosingQuality = false },
+        )
+        return
+    }
+
+    AlertScaffold(hazeState = hazeState, onDismiss = { if (!testing) onDismiss() }) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 19.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, fontWeight = FontWeight.W600),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = status ?: description,
+                modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
+                color = when {
+                    status == null -> MaterialTheme.colorScheme.onSurface
+                    statusIsGood -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.error
+                },
+                textAlign = TextAlign.Center,
+            )
+            PillTextField(
+                value = urlValue,
+                onValueChange = onUrlChange,
+                placeholder = "https://music.example.com",
+                enabled = !testing,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            PillTextField(
+                value = usernameValue,
+                onValueChange = onUsernameChange,
+                placeholder = stringResource(R.string.username),
+                enabled = !testing,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            )
+            Spacer(Modifier.height(8.dp))
+            PillTextField(
+                value = passwordValue,
+                onValueChange = onPasswordChange,
+                placeholder = stringResource(R.string.password),
+                enabled = !testing,
+                isPassword = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = { if (canSubmit && !testing) onSave() }),
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(11.dp))
+                    .clickable(enabled = !testing) { choosingQuality = true }
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.server_stream_quality),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = quality.label,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+            }
+            if (quality == SubsonicStreamQuality.ORIGINAL) {
+                Text(
+                    text = stringResource(R.string.server_quality_original_note),
+                    modifier = Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        AlertRule()
         AlertAction(
             label = if (testing) stringResource(R.string.testing) else stringResource(R.string.test),
             emphasised = false,

@@ -170,7 +170,9 @@ import com.music.bitchord.download.Downloads
 import com.music.bitchord.ui.components.BrowseActionsSheet
 import com.music.bitchord.ui.components.BrowseTarget
 import com.music.bitchord.ui.components.DownloadManagerSheet
+import com.music.bitchord.ui.components.ChoiceAlert
 import com.music.bitchord.ui.components.PlaylistPickerSheet
+import com.music.bitchord.ui.components.TextValueAlert
 import com.music.bitchord.ui.components.SongActionsSheet
 import com.music.bitchord.playback.rememberMediaController
 import com.music.bitchord.playback.rememberPlayerState
@@ -190,6 +192,8 @@ import com.music.bitchord.ui.components.backdrop.backdrops.layerBackdrop
 import com.music.bitchord.ui.components.backdrop.backdrops.rememberLayerBackdrop
 import com.music.bitchord.ui.components.isGlassSupported
 import com.music.bitchord.data.sources.SourceConfig
+import com.music.bitchord.data.sources.ServerBrowseKind
+import com.music.bitchord.data.sources.ServerPlaylist
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.ui.components.ListenBrainzTokenAlert
 import com.music.bitchord.ui.components.MiniPlayer
@@ -530,6 +534,14 @@ private fun BitChordApp(
     // The picker opened from the Library tab, where there is no track and
     // creating the playlist is the whole errand.
     var creatingPlaylist by remember { mutableStateOf(false) }
+    // Which track the *server* playlist picker is adding, or null when it is
+    // closed. Its own slot because the two pickers are different questions:
+    // one lists YouTube Music playlists, the other a server's own.
+    var serverPlaylistTarget by remember { mutableStateOf<Song?>(null) }
+    // The track a new server playlist is being made for, and the name being
+    // typed. Null when the naming alert is closed.
+    var serverNewPlaylistFor by remember { mutableStateOf<Song?>(null) }
+    var serverPlaylistName by remember { mutableStateOf("") }
     // Which album or playlist the collection menu is open on, or null when it
     // is shut. One slot for every surface that can open it — the shelves on
     // three tabs, the search rows, the artist page's carousels, the release
@@ -655,6 +667,7 @@ private fun BitChordApp(
     val pinnedToOriginal by OriginalVersion.pinned.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val playlistsLoading by viewModel.playlistsLoading.collectAsStateWithLifecycle()
+    val serverPlaylists by viewModel.serverPlaylists.collectAsStateWithLifecycle()
 
     // Settings has no tab of its own — it sits on top of whatever tab was
     // selected. A pushed album/artist page (from the player, search, etc.)
@@ -2185,6 +2198,13 @@ private fun BitChordApp(
                         SourcesScreen(
                             contentPadding = listPadding,
                             onEditSource = { editingSource = it },
+                            onBrowseServer = { config ->
+                                // The sources screen has to come down first:
+                                // a detail page only wins the navigation target
+                                // once it does — see the targetState chain.
+                                showSources = false
+                                viewModel.openServerLibrary(config.id)
+                            },
                         )
                     } else if (key == "listen_together") {
                         ListenTogetherScreen(
@@ -2981,6 +3001,12 @@ private fun BitChordApp(
             // carries the per-entry id a removal is expressed in.
             val editable = viewModel.editablePlaylist(detail?.browseId)
                 ?.takeIf { !fromPlayer && song.setVideoId != null }
+            // A server playlist page is editable the same way: the row's track
+            // key names the song the server knows, and a removal is one
+            // updatePlaylist call.
+            val serverEditable = detail?.browseId
+                ?.let { SourceRegistry.parseBrowseKey(it) }
+                ?.takeIf { it.kind == ServerBrowseKind.PLAYLIST && !fromPlayer }
             ModalBottomSheet(
                 onDismissRequest = { songActions = null },
                 // The sheet paints itself in the track's own colours, corners
@@ -3005,14 +3031,32 @@ private fun BitChordApp(
                     onToggleDislike = { viewModel.toggleDislike(song.videoId) },
                     onAddToPlaylist = {
                         songActions = null
-                        viewModel.loadPlaylists()
-                        playlistTarget = song
-                    },
-                    onRemoveFromPlaylist = editable?.let {
-                        {
-                            songActions = null
-                            viewModel.removeFromPlaylist(it.browseId, song)
+                        // A source-backed track belongs in its own server's
+                        // playlists, not in YouTube's — its id is one YouTube
+                        // has never seen.
+                        val source = SourceRegistry.parseTrackKey(song.videoId)
+                        if (source != null) {
+                            serverPlaylistTarget = song
+                            viewModel.loadServerPlaylists(source.first)
+                        } else {
+                            viewModel.loadPlaylists()
+                            playlistTarget = song
                         }
+                    },
+                    onRemoveFromPlaylist = when {
+                        editable != null -> {
+                            {
+                                songActions = null
+                                viewModel.removeFromPlaylist(editable.browseId, song)
+                            }
+                        }
+                        serverEditable != null -> {
+                            {
+                                songActions = null
+                                viewModel.removeFromServerPlaylist(serverEditable, song)
+                            }
+                        }
+                        else -> null
                     },
                     onOpenAlbum = { id ->
                         openPage(
@@ -3177,6 +3221,66 @@ private fun BitChordApp(
             }
         }
 
+        // ---- Server playlist picker ----
+        // The same errand as the picker above, aimed at a different library:
+        // these playlists live on the track's own server, and a new one is made
+        // there rather than in the YouTube account.
+        serverPlaylistTarget?.let { song ->
+            val source = SourceRegistry.parseTrackKey(song.videoId)
+            if (source != null) {
+                val configId = source.first
+                val existing = (serverPlaylists as? UiState.Success)?.data.orEmpty()
+                ChoiceAlert(
+                    hazeState = hazeState,
+                    title = context.getString(R.string.add_to_playlist),
+                    message = null,
+                    options = existing + ServerPlaylist(
+                        id = NEW_SERVER_PLAYLIST,
+                        name = context.getString(R.string.new_playlist),
+                    ),
+                    selected = ServerPlaylist(),
+                    label = { it.name },
+                    onSelect = { picked ->
+                        serverPlaylistTarget = null
+                        if (picked.id == NEW_SERVER_PLAYLIST) {
+                            serverPlaylistName = ""
+                            serverNewPlaylistFor = song
+                        } else {
+                            viewModel.addToServerPlaylist(configId, picked.id, song)
+                        }
+                    },
+                    onDismiss = { serverPlaylistTarget = null },
+                )
+            }
+        }
+
+        // Naming a new playlist on the server. A text alert rather than a form
+        // inside the picker: there is one field and one decision, and the
+        // picker's job — picking — is already done.
+        serverNewPlaylistFor?.let { song ->
+            val source = SourceRegistry.parseTrackKey(song.videoId)
+            if (source != null) {
+                TextValueAlert(
+                    hazeState = hazeState,
+                    title = context.getString(R.string.new_playlist),
+                    message = context.getString(R.string.server_new_playlist_description),
+                    placeholder = context.getString(R.string.playlist_name),
+                    value = serverPlaylistName,
+                    onValueChange = { serverPlaylistName = it },
+                    onSave = {
+                        viewModel.createServerPlaylist(source.first, serverPlaylistName, song)
+                        serverNewPlaylistFor = null
+                        serverPlaylistName = ""
+                    },
+                    onDismiss = {
+                        serverNewPlaylistFor = null
+                        serverPlaylistName = ""
+                    },
+                    saveEnabled = serverPlaylistName.isNotBlank(),
+                )
+            }
+        }
+
         // ---- Album / playlist actions ----
         // Opened by holding a card on any tab, or from the release page's own
         // overflow. What a track's long-press menu is to one song, this is to
@@ -3214,8 +3318,16 @@ private fun BitChordApp(
                 ?.takeIf { signedIn && ownedPlaylists[it] == true }
                 ?.let { id -> playlists.firstOrNull { it.browseId == id } }
             val remote = target.browseId?.startsWith("local:") == false
+            // A page on a configured server is remote, but nothing about it is
+            // YouTube's: no share link to build, and nothing to pin into the
+            // Library tab, which lists YouTube playlists by their own ids.
+            val serverPage = target.browseId?.startsWith("srcb:") == true
+            val serverPlaylistRef = target.browseId
+                ?.let { SourceRegistry.parseBrowseKey(it) }
+                ?.takeIf { it.kind == ServerBrowseKind.PLAYLIST }
             val pinnedPlaylists by AppSettings.pinnedPlaylists.collectAsStateWithLifecycle()
-            val pinnableId = target.browseId?.takeIf { target.type == BrowseType.PLAYLIST }
+            val pinnableId = target.browseId
+                ?.takeIf { target.type == BrowseType.PLAYLIST && !serverPage }
             ModalBottomSheet(
                 onDismissRequest = { browseActions = null },
                 containerColor = MaterialTheme.colorScheme.background,
@@ -3277,7 +3389,10 @@ private fun BitChordApp(
                     // channel link, not a release, and nobody asked for it)
                     // and off anything with no real browse id behind it.
                     onShare = target.browseId
-                        ?.takeIf { remote && (target.type == BrowseType.ALBUM || target.type == BrowseType.PLAYLIST) }
+                        ?.takeIf {
+                            remote && !serverPage &&
+                                (target.type == BrowseType.ALBUM || target.type == BrowseType.PLAYLIST)
+                        }
                         ?.let { id ->
                             {
                                 val url = if (target.type == BrowseType.PLAYLIST) {
@@ -3315,11 +3430,21 @@ private fun BitChordApp(
                             browseActions = null
                             viewModel.renamePlaylist(p, name)
                         }
+                    } ?: serverPlaylistRef?.let { ref ->
+                        { name: String ->
+                            browseActions = null
+                            viewModel.renameServerPlaylist(ref, name)
+                        }
                     },
                     onDelete = playlist?.let { p ->
                         {
                             browseActions = null
                             viewModel.deletePlaylist(p)
+                        }
+                    } ?: serverPlaylistRef?.let { ref ->
+                        {
+                            browseActions = null
+                            viewModel.deleteServerPlaylist(ref)
                         }
                     },
                     onDeleteDownload = target.downloadId?.let { id ->
@@ -3635,6 +3760,16 @@ private fun BitChordApp(
 
     }
 }
+
+/**
+ * The sentinel row in the server playlist picker that means "make a new one".
+ *
+ * An id no server would issue, rather than a sealed option type: the picker is
+ * a list of [ServerPlaylist]s and the one thing that can happen to a list of
+ * them that is not picking one. The value never reaches the server — the
+ * selection branch is what checks it.
+ */
+private const val NEW_SERVER_PLAYLIST = "bitchord:new-server-playlist"
 
 private fun tween(durationMillis: Int) =
     androidx.compose.animation.core.tween<Float>(durationMillis)

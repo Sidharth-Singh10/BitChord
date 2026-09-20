@@ -24,6 +24,7 @@ import com.music.bitchord.data.innertube.PlaybackTracker
 import com.music.bitchord.data.innertube.StreamResolver
 import com.music.bitchord.auth.CapturedSession
 import com.music.bitchord.auth.WebSessionMode
+import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.model.Account
 import com.music.bitchord.data.model.AccountChannel
 import com.music.bitchord.data.model.BrowseType
@@ -65,6 +66,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import com.music.bitchord.data.sources.ServerAlbum
+import com.music.bitchord.data.sources.ServerAlbumListType
+import com.music.bitchord.data.sources.ServerArtist
+import com.music.bitchord.data.sources.ServerBrowseKind
+import com.music.bitchord.data.sources.ServerBrowseRef
+import com.music.bitchord.data.sources.ServerLibrary
+import com.music.bitchord.data.sources.ServerPlaylist
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.SourceResolver
@@ -367,6 +375,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _library = MutableStateFlow<UiState<LibraryPage>>(UiState.Loading)
     val library: StateFlow<UiState<LibraryPage>> = _library.asStateFlow()
 
+    /**
+     * The playlists of one server, for the "add to playlist" picker.
+     *
+     * A single flow rather than one per server: the picker is open for one
+     * track on one server at a time, and keeping the last answer around is
+     * what lets the list appear instantly when the same server is asked again.
+     */
+    private val _serverPlaylists = MutableStateFlow<UiState<List<ServerPlaylist>>>(UiState.Loading)
+    val serverPlaylists: StateFlow<UiState<List<ServerPlaylist>>> = _serverPlaylists.asStateFlow()
+
     /** In-memory cache is partitioned by account and profile; it is never shared. */
     private data class ListenerSnapshot(
         val account: Account?, val library: UiState<LibraryPage>,
@@ -419,6 +437,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * registered, and people tap again.
      */
     fun setLike(videoId: String, status: LikeStatus) {
+        // A source-backed track has no YouTube identity to rate — its id is
+        // `src:{config}::{id}` — so a rating would be a request about a song
+        // YouTube has never heard of. The surfaces that show a heart hide it
+        // for these tracks; this is the second half of that promise.
+        if (SourceRegistry.parseTrackKey(videoId) != null) return
         if (!requireSignIn()) return
         val previous = likeStatusOf(videoId)
         if (previous == status) return
@@ -1864,6 +1887,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Enough to be worth scrolling, short enough not to bury YouTube's own rows. */
         const val SOURCE_SEARCH_LIMIT = 12
 
+        /** How many random tracks a server's home page opens on. */
+        const val SERVER_RANDOM_SONGS = 50
+
+        /** How many of a server's newest releases its home page shows. */
+        const val SERVER_ALBUM_ROW = 20
+
+        /** How many artists a server's home page shows before the list is enough. */
+        const val SERVER_ARTIST_ROW = 30
+
+        /** How many of a server's playlists its home page shows. */
+        const val SERVER_PLAYLIST_ROW = 20
+
         /**
          * What a page with an empty listing says.
          *
@@ -1892,6 +1927,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         thumbnailUrl: String? = null,
         type: BrowseType = BrowseType.OTHER,
     ) {
+        // A page on a configured server is loaded from that server rather than
+        // from YouTube. It travels through the same detail stack, so back,
+        // long-press and playback behave exactly as they do for an Innertube
+        // page — only the loader differs.
+        SourceRegistry.parseBrowseKey(browseId)?.let { ref ->
+            openServerDetail(ref, title, subtitle, thumbnailUrl)
+            return
+        }
         val resolved = browseTypeOf(browseId, type)
         _detailStack.value += DetailPage(
             browseId = browseId,
@@ -2033,6 +2076,281 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // and has nothing to append to before this.
             more?.let { fillIn(browseId, it, thumbnailUrl ?: artwork) }
         }
+    }
+
+    /**
+     * Opens the home page of a configured server: a random selection from the
+     * library, the newest releases, and the artist list.
+     *
+     * Reached from the sources screen rather than from a shelf, because the
+     * Library tab is YouTube's own library and a card there would be a card
+     * about something the page around it does not contain. The detail stack is
+     * shared, so from this page artists, albums, playlists and playback all
+     * behave like any other browse page.
+     */
+    fun openServerLibrary(configId: String) {
+        val config = SourceRegistry.config(configId) ?: return
+        openServerDetail(
+            ref = ServerBrowseRef(configId, ServerBrowseKind.SERVER, ""),
+            title = config.displayName,
+            subtitle = "",
+            thumbnailUrl = null,
+        )
+    }
+
+    /** One page of a server's library, pushed and then filled in. */
+    private fun openServerDetail(
+        ref: ServerBrowseRef,
+        title: String,
+        subtitle: String,
+        thumbnailUrl: String?,
+    ) {
+        val browseId = SourceRegistry.browseKey(ref.configId, ref.kind, ref.id)
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            thumbnailUrl = thumbnailUrl,
+            songs = UiState.Loading,
+            type = when (ref.kind) {
+                ServerBrowseKind.ALBUM -> BrowseType.ALBUM
+                ServerBrowseKind.ARTIST -> BrowseType.ARTIST
+                ServerBrowseKind.PLAYLIST -> BrowseType.PLAYLIST
+                ServerBrowseKind.SERVER -> BrowseType.OTHER
+            },
+        )
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(ref.configId) as? ServerLibrary
+            if (library == null) {
+                updateServerPage(browseId) { it.copy(songs = UiState.Error(text(R.string.server_page_failed))) }
+                return@launch
+            }
+            val loaded = try {
+                loadServerPage(library, ref)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                TrackLog.w("BitChord", "server page ${ref.kind} failed: ${failure.message}")
+                updateServerPage(browseId) {
+                    it.copy(songs = UiState.Error(failure.message ?: text(R.string.server_page_failed)))
+                }
+                return@launch
+            }
+            // Update by id — the user may have pushed another page meanwhile.
+            updateServerPage(browseId) {
+                it.copy(
+                    songs = loaded.songs,
+                    sections = loaded.sections,
+                    title = loaded.title ?: it.title,
+                    subtitle = loaded.subtitle ?: it.subtitle,
+                    thumbnailUrl = loaded.artwork ?: it.thumbnailUrl,
+                    description = loaded.description,
+                )
+            }
+        }
+    }
+
+    /** What a loaded server page has to put on screen. */
+    private data class ServerPageLoad(
+        val songs: UiState<List<Song>>,
+        val sections: List<HomeShelf> = emptyList(),
+        val title: String? = null,
+        val subtitle: String? = null,
+        val artwork: String? = null,
+        val description: String? = null,
+    )
+
+    private suspend fun loadServerPage(library: ServerLibrary, ref: ServerBrowseRef): ServerPageLoad =
+        when (ref.kind) {
+            ServerBrowseKind.SERVER -> {
+                val songs = library.randomSongs(SERVER_RANDOM_SONGS)
+                val albums = library.albums(ServerAlbumListType.NEWEST, 0, SERVER_ALBUM_ROW)
+                val artists = library.artists().take(SERVER_ARTIST_ROW)
+                // Playlists and starred rows are extras the server may have
+                // nothing for — a library with neither is still a library, and
+                // neither failing should stop the page opening.
+                val playlists = runCatching { library.playlists() }
+                    .getOrDefault(emptyList())
+                    .take(SERVER_PLAYLIST_ROW)
+                val starredItems = runCatching { library.starred() }
+                    .getOrNull()
+                    ?.let { starred ->
+                        starred.albums.map { it.toShelfItem(ref.configId) } +
+                            starred.artists.map { it.toShelfItem(ref.configId) }
+                    }
+                    .orEmpty()
+                ServerPageLoad(
+                    songs = songs.ifEmptyError(),
+                    sections = albums.shelf(text(R.string.shelf_new_albums_singles)) { it.toShelfItem(ref.configId) } +
+                        playlists.shelf(text(R.string.playlists)) { it.toShelfItem(ref.configId) } +
+                        artists.shelf(text(R.string.artists)) { it.toShelfItem(ref.configId) } +
+                        starredItems.shelf(text(R.string.server_starred)),
+                    subtitle = library.serverName,
+                )
+            }
+
+            ServerBrowseKind.ARTIST -> {
+                val page = library.artist(ref.id)
+                    ?: return ServerPageLoad(UiState.Error(text(R.string.server_row_missing)))
+                ServerPageLoad(
+                    songs = page.topSongs.ifEmptyError(),
+                    sections = page.albums.shelf(text(R.string.albums)) { it.toShelfItem(ref.configId) },
+                    title = page.artist.name,
+                    subtitle = page.artist.albumCount.takeIf { it > 0 }?.let { "$it ${text(R.string.albums)}" },
+                    artwork = page.artist.thumbnailUrl,
+                    description = page.bio,
+                )
+            }
+
+            ServerBrowseKind.ALBUM -> {
+                val page = library.album(ref.id)
+                    ?: return ServerPageLoad(UiState.Error(text(R.string.server_row_missing)))
+                ServerPageLoad(
+                    songs = page.songs.ifEmptyError(),
+                    title = page.album.name,
+                    subtitle = page.album.artist,
+                    artwork = page.album.thumbnailUrl,
+                )
+            }
+
+            ServerBrowseKind.PLAYLIST -> {
+                val songs = library.playlist(ref.id)
+                    ?: return ServerPageLoad(UiState.Error(text(R.string.server_row_missing)))
+                ServerPageLoad(songs = songs.ifEmptyError())
+            }
+        }
+
+    private fun List<Song>.ifEmptyError(): UiState<List<Song>> =
+        if (isEmpty()) UiState.Error(text(R.string.no_tracks_here)) else UiState.Success(this)
+
+    private fun <T> List<T>.shelf(title: String, item: (T) -> ShelfItem): List<HomeShelf> =
+        if (isEmpty()) emptyList() else listOf(HomeShelf(title = title, items = map(item)))
+
+    /** As above, for items already built. */
+    private fun List<ShelfItem>.shelf(title: String): List<HomeShelf> =
+        if (isEmpty()) emptyList() else listOf(HomeShelf(title = title, items = this))
+
+    private fun ServerAlbum.toShelfItem(configId: String) = ShelfItem(
+        title = name,
+        subtitle = artist,
+        thumbnailUrl = thumbnailUrl,
+        videoId = null,
+        browseId = SourceRegistry.browseKey(configId, ServerBrowseKind.ALBUM, id),
+    )
+
+    private fun ServerPlaylist.toShelfItem(configId: String) = ShelfItem(
+        title = name,
+        subtitle = owner,
+        thumbnailUrl = thumbnailUrl,
+        videoId = null,
+        browseId = SourceRegistry.browseKey(configId, ServerBrowseKind.PLAYLIST, id),
+    )
+
+    private fun ServerArtist.toShelfItem(configId: String) = ShelfItem(
+        title = name,
+        subtitle = if (albumCount > 0) "$albumCount ${text(R.string.albums)}" else "",
+        thumbnailUrl = thumbnailUrl,
+        videoId = null,
+        browseId = SourceRegistry.browseKey(configId, ServerBrowseKind.ARTIST, id),
+    )
+
+    private fun updateServerPage(browseId: String, transform: (DetailPage) -> DetailPage) {
+        _detailStack.value = _detailStack.value.map {
+            if (it.browseId == browseId) transform(it) else it
+        }
+    }
+
+    // ── Server playlists ──────────────────────────────────────────────────
+
+    /** Loads the playlists of [configId] for the add-to-playlist picker. */
+    fun loadServerPlaylists(configId: String) {
+        _serverPlaylists.value = UiState.Loading
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(configId) as? ServerLibrary
+            _serverPlaylists.value = if (library == null) {
+                UiState.Error(text(R.string.server_page_failed))
+            } else {
+                runCatching { library.playlists() }.fold(
+                    onSuccess = { UiState.Success(it) },
+                    onFailure = { UiState.Error(it.message ?: text(R.string.server_page_failed)) },
+                )
+            }
+        }
+    }
+
+    /** Creates a playlist on the server, optionally with [song] as its first track. */
+    fun createServerPlaylist(configId: String, name: String, song: Song?) {
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(configId) as? ServerLibrary ?: return@launch
+            val songId = song?.let { SourceRegistry.parseTrackKey(it.videoId)?.second }
+            runCatching { library.createPlaylist(name, listOfNotNull(songId)) }
+                .onFailure { TrackLog.w("BitChord", "server playlist create failed: ${it.message}") }
+        }
+    }
+
+    /** Adds [song] to a server playlist, then refreshes the page if it is open. */
+    fun addToServerPlaylist(configId: String, playlistId: String, song: Song) {
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(configId) as? ServerLibrary ?: return@launch
+            val songId = SourceRegistry.parseTrackKey(song.videoId)?.second ?: return@launch
+            runCatching { library.updatePlaylist(playlistId, addSongIds = listOf(songId)) }
+                .onFailure { TrackLog.w("BitChord", "server playlist add failed: ${it.message}") }
+            reloadServerPlaylistIfOpen(configId, playlistId)
+        }
+    }
+
+    /** Removes [song] from the server playlist whose page is open. */
+    fun removeFromServerPlaylist(ref: ServerBrowseRef, song: Song) {
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(ref.configId) as? ServerLibrary ?: return@launch
+            val songId = SourceRegistry.parseTrackKey(song.videoId)?.second ?: return@launch
+            runCatching { library.updatePlaylist(ref.id, removeSongIds = listOf(songId)) }
+                .onFailure { TrackLog.w("BitChord", "server playlist remove failed: ${it.message}") }
+            reloadServerPlaylistIfOpen(ref.configId, ref.id)
+        }
+    }
+
+    /** Renames a server playlist and updates its open page, if it has one. */
+    fun renameServerPlaylist(ref: ServerBrowseRef, name: String) {
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(ref.configId) as? ServerLibrary ?: return@launch
+            runCatching { library.updatePlaylist(ref.id, name = name) }
+                .onFailure { TrackLog.w("BitChord", "server playlist rename failed: ${it.message}") }
+            val browseId = SourceRegistry.browseKey(ref.configId, ServerBrowseKind.PLAYLIST, ref.id)
+            updateServerPage(browseId) { it.copy(title = name) }
+        }
+    }
+
+    /**
+     * Deletes a server playlist.
+     *
+     * The page is popped rather than left showing a list the server no longer
+     * has: a page whose subject is gone can only be refreshed into an error,
+     * and closing it is what the user meant by deleting it.
+     */
+    fun deleteServerPlaylist(ref: ServerBrowseRef) {
+        viewModelScope.launch {
+            val library = SourceRegistry.instance(ref.configId) as? ServerLibrary ?: return@launch
+            runCatching { library.deletePlaylist(ref.id) }
+                .onFailure { TrackLog.w("BitChord", "server playlist delete failed: ${it.message}") }
+            val browseId = SourceRegistry.browseKey(ref.configId, ServerBrowseKind.PLAYLIST, ref.id)
+            _detailStack.value = _detailStack.value.filterNot { it.browseId == browseId }
+        }
+    }
+
+    /**
+     * Re-reads a playlist page that is on the stack, after a write.
+     *
+     * Only if it is open: a change made from the player while the playlist page
+     * is not up has nothing on screen to update, and fetching it anyway would
+     * be a round trip for a page nobody is looking at.
+     */
+    private suspend fun reloadServerPlaylistIfOpen(configId: String, playlistId: String) {
+        val browseId = SourceRegistry.browseKey(configId, ServerBrowseKind.PLAYLIST, playlistId)
+        if (_detailStack.value.none { it.browseId == browseId }) return
+        val library = SourceRegistry.instance(configId) as? ServerLibrary ?: return
+        val songs = runCatching { library.playlist(playlistId) }.getOrNull() ?: return
+        updateServerPage(browseId) { it.copy(songs = songs.ifEmptyError()) }
     }
 
     fun reloadLocalDetail(browseId: String) {
