@@ -21,7 +21,12 @@ enum class LyricsSource(
     // name rather than position, so this can be rearranged without disturbing
     // an order somebody has already chosen for themselves.
     //
-    // The three Apple hosts lead, because they carry the same catalogue and
+    // [SERVER] leads: it is the machine the audio is already coming from, it
+    // matches on the server's own id for the recording, and it costs no
+    // third-party request at all. It answers nothing for a track that did not
+    // come from a server, which is most of them, and that costs nothing either.
+    //
+    // The three Apple hosts follow, because they carry the same catalogue and
     // that catalogue is the one with the voices in it. [BINI_LYRICS] goes
     // first of the three: it is the only one that will answer to a recording
     // rather than to a name, and it is where the ISRC the others use comes
@@ -29,6 +34,11 @@ enum class LyricsSource(
     // reliable hosting — behind them rather than in front, so a track does not
     // wait on a mirror that is down to be told what three other hosts already
     // had.
+    SERVER(
+        label = "Your server",
+        detail = "Lyrics stored with your own files, matched on the recording",
+        wordSynced = false,
+    ),
     BINI_LYRICS(
         label = "BiniLyrics",
         detail = "The same Apple timings, matched on the recording itself",

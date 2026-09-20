@@ -2,6 +2,8 @@ package com.music.bitchord.data.scrobbling
 
 import com.music.bitchord.data.DebugLog as Log
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.sources.reportNowPlaying
+import com.music.bitchord.data.sources.reportPlayed
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -131,6 +133,11 @@ class ScrobbleManager(
                     Log.e(TAG, "Failed to scrobble: ${song.title}", throwable)
                 }
         }
+        // The track's own server is told too, when it has one. Separate from
+        // Last.fm rather than part of the same call: they are independent
+        // accounts, one may be configured and not the other, and a failure in
+        // either must not stop the other from being reported.
+        scope.launch { reportPlayed(song, songStartedAt) }
     }
 
     private fun updateNowPlaying(song: Song) {
@@ -149,6 +156,7 @@ class ScrobbleManager(
                     Log.e(TAG, "Failed to update now playing: ${song.title}", throwable)
                 }
         }
+        scope.launch { reportNowPlaying(song) }
     }
 
     fun onPlayerStateChanged(

@@ -15,7 +15,10 @@ class ProviderLyricsTest {
 
     @Test
     fun `the six imported providers are exposed`() {
-        assertEquals(16, LyricsSource.entries.size)
+        // The third-party providers, plus [LyricsSource.SERVER] — the
+        // listener's own machine, which is not a provider but is asked in the
+        // same race.
+        assertEquals(17, LyricsSource.entries.size)
         assertTrue(LyricsSource.entries.containsAll(listOf(
             LyricsSource.BETTER_LYRICS_PORTATO,
             LyricsSource.MEGALOBIZ,
