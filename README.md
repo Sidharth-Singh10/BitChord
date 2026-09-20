@@ -43,7 +43,7 @@
 
 #### Playback
 - **Search, browse and play** anything available on YouTube Music.
-- **Hi-Res lossless audio** — FLAC/ALAC from a configured module source, with YouTube Music as fallback.
+- **Hi-Res lossless audio** — FLAC/ALAC from your own music server or a configured module source, with YouTube Music as fallback.
 - **Gapless playback with true crossfade**, adjustable 0–12s.
 - **Automix [Beta]** — DJ-style transitions with beat-matching and tempo-stretching.
 - **Offline downloads** — save tracks with embedded metadata.
@@ -64,6 +64,7 @@
 - **Sign in with your Google account** for personalized content.
 - **Discord Rich Presence** — in-app login, live track/artist/album and progress.
 - **Scrobbling** to Last.fm and ListenBrainz.
+- **Your own music server** — Navidrome, Airsonic, Gonic and other Subsonic-compatible servers: search, browse, playlists, scrobbling and lyrics from your own library. See [docs/SUBSONIC.md](docs/SUBSONIC.md).
 - **Pluggable sources** — add, edit, test and health-check module sources.
 
 #### Controls & Tweaks
