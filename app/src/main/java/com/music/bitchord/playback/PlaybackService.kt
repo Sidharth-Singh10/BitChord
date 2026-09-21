@@ -70,6 +70,7 @@ import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.model.artworkAt
+import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.download.Downloads
 import java.util.concurrent.ConcurrentHashMap
@@ -110,6 +111,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -4484,6 +4486,17 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             // Explicit <Any, _>: these flows have mixed element types, and letting
             // the reified vararg combine() infer T lands on an intersection type.
+            //
+            // The last flow is derived rather than a setting: whether any
+            // configured source can report plays to its own server. A source
+            // added or removed while the app runs takes effect without a
+            // restart, and distinctUntilChanged keeps an edit to an unrelated
+            // source from re-running the block.
+            val hasPlaybackServer = SourceRegistry.configs
+                .map { configs ->
+                    configs.any { it.kind == SourceKind.SUBSONIC && it.enabled && it.isComplete }
+                }
+                .distinctUntilChanged()
             combine<Any, ScrobblingSnapshot>(
                 AppSettings.lastfmEnabled,
                 AppSettings.lastfmScrobbleEnabled,
@@ -4496,6 +4509,7 @@ class PlaybackService : MediaLibraryService() {
                 AppSettings.scrobbleMinDuration,
                 AppSettings.scrobbleDelayPercent,
                 AppSettings.scrobbleDelaySeconds,
+                hasPlaybackServer,
             ) { values ->
                 ScrobblingSnapshot(
                     lastfmEnabled = values[0] as Boolean,
@@ -4509,14 +4523,23 @@ class PlaybackService : MediaLibraryService() {
                     minDuration = values[8] as Int,
                     delayPercent = values[9] as Float,
                     delaySeconds = values[10] as Int,
+                    serverConfigured = values[11] as Boolean,
                 )
             }.collectLatest { snapshot ->
-                val shouldEnable = AppSettings.scrobblingAvailable &&
-                    snapshot.lastfmEnabled &&
+                val lastfmConfigured = snapshot.lastfmEnabled &&
                     snapshot.scrobbleEnabled &&
                     snapshot.sessionKey.isNotBlank() &&
                     snapshot.apiKey.isNotBlank() &&
                     snapshot.secret.isNotBlank()
+                // Either backend is reason enough to run the timer. A listener
+                // with a Navidrome and no Last.fm account still wants their
+                // plays counted by the server — and by whatever that server
+                // forwards them to.
+                val shouldEnable = AppSettings.scrobblingAvailable &&
+                    ScrobbleManager.shouldRun(
+                        lastfmConfigured = lastfmConfigured,
+                        serverConfigured = snapshot.serverConfigured,
+                    )
 
                 if (!shouldEnable) {
                     scrobbleManager?.destroy()
@@ -4524,15 +4547,18 @@ class PlaybackService : MediaLibraryService() {
                     return@collectLatest
                 }
 
-                LastFM.configure(
-                    endpoint = snapshot.endpoint.ifBlank { LastFM.DEFAULT_API_ENDPOINT },
-                    apiKey = snapshot.apiKey,
-                    secret = snapshot.secret,
-                    sessionKey = snapshot.sessionKey,
-                )
+                if (lastfmConfigured) {
+                    LastFM.configure(
+                        endpoint = snapshot.endpoint.ifBlank { LastFM.DEFAULT_API_ENDPOINT },
+                        apiKey = snapshot.apiKey,
+                        secret = snapshot.secret,
+                        sessionKey = snapshot.sessionKey,
+                    )
+                }
                 val manager = scrobbleManager ?: ScrobbleManager(scope).also {
                     scrobbleManager = it
                 }
+                manager.useLastFm = lastfmConfigured
                 manager.minSongDuration = snapshot.minDuration
                 manager.scrobbleDelayPercent = snapshot.delayPercent
                 manager.scrobbleDelaySeconds = snapshot.delaySeconds
@@ -4564,6 +4590,8 @@ class PlaybackService : MediaLibraryService() {
         val minDuration: Int,
         val delayPercent: Float,
         val delaySeconds: Int,
+        /** Whether any configured source can report plays to its own server. */
+        val serverConfigured: Boolean,
     )
 
     // ---- Discord Rich Presence -------------------------------------------------

@@ -54,7 +54,7 @@ original file, whatever the mode.
 | Cover art | Fetched from the server |
 | Browse | Artists, albums (newest), random tracks, playlists and starred items on the server's home page; artist and album pages |
 | Playlists | Read, play, create, add to, remove from, rename and delete |
-| Play reporting | Now-playing and finished plays are sent to the server, in addition to Last.fm / ListenBrainz |
+| Play reporting | Now-playing and finished plays are sent to the server, in addition to Last.fm / ListenBrainz. No Last.fm account is needed for this: if the server itself scrobbles to Last.fm or ListenBrainz (Navidrome's per-user settings), it forwards them, so server tracks reach ListenBrainz without a token in BitChord. |
 | Lyrics | OpenSubsonic structured lyrics (with timings), falling back to the server's own tag reader |
 | Downloads & offline | The normal BitChord downloader; lossless keeps the original file |
 | Multiple servers | Each is its own source, tried in the order shown on the Sources screen |

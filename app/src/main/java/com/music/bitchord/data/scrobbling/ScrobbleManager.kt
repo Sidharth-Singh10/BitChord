@@ -26,6 +26,18 @@ class ScrobbleManager(
     var useNowPlaying = true
     var usePrimaryArtistOnly = false
 
+    /**
+     * Whether Last.fm is configured at all.
+     *
+     * The manager runs for two independent reasons — Last.fm, and a source
+     * that reports plays to its own server — and this is what keeps a
+     * Last.fm-less listener from paying for calls that could only fail. The
+     * server reports are not gated on it: they are a different service, and a
+     * ListenBrainz setup behind a Navidrome has no other way to hear about a
+     * play.
+     */
+    var useLastFm = false
+
     fun destroy() {
         scrobbleJob?.cancel()
         scrobbleRemainingMillis = 0L
@@ -42,9 +54,9 @@ class ScrobbleManager(
         songStartedAt = System.currentTimeMillis() / 1000
         songStarted = true
         startScrobbleTimer(song, durationMs)
-        if (useNowPlaying) {
-            updateNowPlaying(song)
-        }
+        // Always asked; [updateNowPlaying] decides for itself whether that
+        // means Last.fm, the track's own server, or both.
+        updateNowPlaying(song)
     }
 
     fun onSongResume(song: Song) {
@@ -117,21 +129,23 @@ class ScrobbleManager(
     }
 
     private fun scrobbleSong(song: Song, durationSeconds: Int) {
-        val scrobbleArtist = song.artist.forScrobble()
-        scope.launch {
-            LastFM
-                .scrobble(
-                    artist = scrobbleArtist,
-                    track = song.title,
-                    duration = durationSeconds,
-                    timestamp = songStartedAt,
-                    album = song.albumName,
-                ).onSuccess {
-                    Log.d(TAG, "Scrobbled: ${song.title} by ${song.artist}")
-                }.onFailure { throwable ->
-                    if (throwable is CancellationException) throw throwable
-                    Log.e(TAG, "Failed to scrobble: ${song.title}", throwable)
-                }
+        if (useLastFm) {
+            val scrobbleArtist = song.artist.forScrobble()
+            scope.launch {
+                LastFM
+                    .scrobble(
+                        artist = scrobbleArtist,
+                        track = song.title,
+                        duration = durationSeconds,
+                        timestamp = songStartedAt,
+                        album = song.albumName,
+                    ).onSuccess {
+                        Log.d(TAG, "Scrobbled: ${song.title} by ${song.artist}")
+                    }.onFailure { throwable ->
+                        if (throwable is CancellationException) throw throwable
+                        Log.e(TAG, "Failed to scrobble: ${song.title}", throwable)
+                    }
+            }
         }
         // The track's own server is told too, when it has one. Separate from
         // Last.fm rather than part of the same call: they are independent
@@ -141,20 +155,22 @@ class ScrobbleManager(
     }
 
     private fun updateNowPlaying(song: Song) {
-        val scrobbleArtist = song.artist.forScrobble()
-        scope.launch {
-            LastFM
-                .updateNowPlaying(
-                    artist = scrobbleArtist,
-                    track = song.title,
-                    album = song.albumName,
-                    duration = song.durationText?.let { parseDurationSeconds(it) },
-                ).onSuccess {
-                    Log.d(TAG, "Updated now playing: ${song.title}")
-                }.onFailure { throwable ->
-                    if (throwable is CancellationException) throw throwable
-                    Log.e(TAG, "Failed to update now playing: ${song.title}", throwable)
-                }
+        if (useLastFm && useNowPlaying) {
+            val scrobbleArtist = song.artist.forScrobble()
+            scope.launch {
+                LastFM
+                    .updateNowPlaying(
+                        artist = scrobbleArtist,
+                        track = song.title,
+                        album = song.albumName,
+                        duration = song.durationText?.let { parseDurationSeconds(it) },
+                    ).onSuccess {
+                        Log.d(TAG, "Updated now playing: ${song.title}")
+                    }.onFailure { throwable ->
+                        if (throwable is CancellationException) throw throwable
+                        Log.e(TAG, "Failed to update now playing: ${song.title}", throwable)
+                    }
+            }
         }
         scope.launch { reportNowPlaying(song) }
     }
@@ -191,5 +207,19 @@ class ScrobbleManager(
 
     companion object {
         private const val TAG = "ScrobbleManager"
+
+        /**
+         * Whether the scrobble timer is worth running at all.
+         *
+         * It runs when Last.fm is configured *or* when a source can report
+         * plays to its own server — the two are independent, and a listener
+         * with a Navidrome and no Last.fm account still wants their plays
+         * counted by the server (and by whatever that server forwards them
+         * to). Kept as a function rather than an inline expression so every
+         * combination is a unit test instead of something only reachable
+         * through the playback service.
+         */
+        fun shouldRun(lastfmConfigured: Boolean, serverConfigured: Boolean): Boolean =
+            lastfmConfigured || serverConfigured
     }
 }
