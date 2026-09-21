@@ -47,11 +47,21 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!--
+      Cleartext is on, deliberately: a Subsonic server or an addon is
+      something the user hosts themselves, and a home LAN or Tailscale
+      address is routinely plain HTTP. Android blocks cleartext from API 28
+      by default, and without this a self-hosted server is unreachable on
+      every build — release included. The app's own third-party services are
+      all HTTPS, so what this opens is the door the user configured, not a
+      general one. On an untrusted network, put a TLS proxy in front of the
+      server.
+    -->
     <application
         android:name=".BitChordApplication"
         android:allowBackup="true"
         android:appCategory="audio"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"

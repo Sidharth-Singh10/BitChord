@@ -9,9 +9,11 @@ nothing is uploaded anywhere, and no third-party service is involved.
 
 1. **Settings → Sources → Add music server**.
 2. Fill in:
-   - **Address** — `https://music.example.com`. Both that and
-     `https://music.example.com/rest` are accepted; a reverse proxy sub-path
-     works too.
+   - **Address** — `https://music.example.com` or `http://192.168.1.10:4533`.
+     Both that and `.../rest` are accepted; a reverse proxy sub-path works
+     too. Plain HTTP is allowed (a LAN or Tailscale address usually is one),
+     but on an untrusted network put a TLS proxy in front — over HTTP the
+     account token and the audio itself travel unencrypted.
    - **Username** and **password** — the same account you use with any other
      Subsonic client. A read-only account is enough unless you want to create
      or edit playlists from BitChord.
